@@ -144,6 +144,34 @@ app.post('/upload/product-media', async (c) => {
   );
 });
 
+// ─── GET /media/* — Servir archivos de R2 públicamente ───────────────────────
+// Sin esto, las imágenes subidas a R2 no se pueden servir al navegador.
+// Se evita el custom domain y el subdominio r2.dev.
+
+app.get('/media/*', async (c) => {
+  const fullPath = c.req.path; // ej: /media/5a2daafd.../products/abc.webp
+  const relativePath = fullPath.replace(/^\/media\//, '');
+
+  if (!relativePath) {
+    return c.json({ success: false, error: 'Ruta de archivo no especificada.' }, 400);
+  }
+
+  const object = await c.env.BUCKET.get(relativePath);
+
+  if (!object) {
+    return c.json({ success: false, error: 'Archivo no encontrado.' }, 404);
+  }
+
+  return new Response(object.body, {
+    headers: {
+      'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+      'Cache-Control': object.httpMetadata?.cacheControl || 'public, max-age=31536000, immutable',
+      'ETag': object.httpEtag,
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+});
+
 // ─── 404 Catch-all ───────────────────────────────────────────────────────────
 
 app.notFound((c) => {
