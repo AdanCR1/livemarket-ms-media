@@ -185,4 +185,5 @@ app.onError((err, c) => {
   return c.json({ success: false, error: 'Error interno del servidor.' }, 500);
 });
 
+
 export default app;
