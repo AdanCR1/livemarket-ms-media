@@ -15,9 +15,6 @@ type Variables = {
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 // ─── CORS ────────────────────────────────────────────────────────────────────
-// El navegador sube archivos a este Worker desde el frontend (otro origen).
-// Se debe permitir explícitamente el dominio de producción y los de desarrollo.
-
 const ALLOWED_ORIGINS = [
   'http://localhost:4321',          // astro dev
   'http://localhost:8788',          // wrangler dev / preview
@@ -37,7 +34,6 @@ app.use(
 );
 
 // ─── Health Check ────────────────────────────────────────────────────────────
-
 app.get('/', (c) => {
   return c.json({
     service: 'livemarket-ms-media',
@@ -46,9 +42,7 @@ app.get('/', (c) => {
   });
 });
 
-// En livemarket-ms-media / src/index.ts
-
-// 1. Endpoint público para logos (SIN middleware de autenticación)
+// ─── 1. Endpoint público para logos (SIN autenticación) ───────────────────────
 app.post('/upload/store-logo', async (c) => {
   const body = await c.req.parseBody();
   const file = body['file'];
@@ -69,7 +63,8 @@ app.post('/upload/store-logo', async (c) => {
   const fileKey = `stores/logos/${crypto.randomUUID()}.webp`;
   const arrayBuffer = await file.arrayBuffer();
 
-  await c.env.MEDIA_BUCKET.put(fileKey, arrayBuffer, {
+  // Usa BUCKET (según Bindings)
+  await c.env.BUCKET.put(fileKey, arrayBuffer, {
     httpMetadata: { contentType: 'image/webp' },
   });
 
@@ -79,14 +74,8 @@ app.post('/upload/store-logo', async (c) => {
   }, 201);
 });
 
-// 2. Middleware JWT aplicado únicamente a las rutas privadas (product-media)
-app.use('/upload/product-media/*', authMiddleware);
-// o si usas rutas con prefijo privado:
-// app.route('/upload/product-media', privateMediaRoutes);
-
-// ─── Middleware de Autenticación (Stateless) ─────────────────────────────────
-
-app.use('/upload/*', async (c, next) => {
+// ─── 2. Middleware de Autenticación para Multimedia de Productos ─────────────
+app.use('/upload/product-media*', async (c, next) => {
   const auth = c.req.header('Authorization');
   if (!auth) {
     return c.json({ success: false, error: 'Token requerido.' }, 401);
@@ -95,7 +84,7 @@ app.use('/upload/*', async (c, next) => {
   const token = auth.replace('Bearer ', '').trim();
 
   try {
-    const decoded = await verify(token, c.env.JWT_SECRET, 'HS256');
+    const decoded = (await verify(token, c.env.JWT_SECRET, 'HS256')) as { store_id?: string };
 
     if (typeof decoded.store_id !== 'string' || decoded.store_id.length === 0) {
       return c.json({ success: false, error: 'Token sin store_id válido.' }, 403);
@@ -111,12 +100,10 @@ app.use('/upload/*', async (c, next) => {
   }
 });
 
-// ─── POST /upload/product-media ──────────────────────────────────────────────
-
+// ─── 3. POST /upload/product-media (Ruta Privada B2B) ────────────────────────
 app.post('/upload/product-media', async (c) => {
   const storeId = c.get('storeId');
 
-  // 1. Parsear form-data
   const body = await c.req.parseBody();
   const file = body['file'];
 
@@ -127,7 +114,6 @@ app.post('/upload/product-media', async (c) => {
     );
   }
 
-  // 2. Validación estricta de formato (solo webp y webm)
   const validTypes = ['image/webp', 'video/webm'];
   if (!validTypes.includes(file.type)) {
     return c.json(
@@ -140,7 +126,6 @@ app.post('/upload/product-media', async (c) => {
     );
   }
 
-  // 3. Límite de tamaño
   const MAX_IMAGE = 10 * 1024 * 1024; // 10 MB
   const MAX_VIDEO = 50 * 1024 * 1024; // 50 MB
   const maxSize = file.type.startsWith('image/') ? MAX_IMAGE : MAX_VIDEO;
@@ -155,12 +140,10 @@ app.post('/upload/product-media', async (c) => {
     );
   }
 
-  // 4. Ruta relativa única bajo el storeId (aislamiento multi-tenant)
   const fileExtension = file.type === 'image/webp' ? 'webp' : 'webm';
   const fileName = crypto.randomUUID();
   const relativePath = `${storeId}/products/${fileName}.${fileExtension}`;
 
-  // 5. Subir a R2 con cache inmutable (UUID = contenido único, no cambia nunca)
   const arrayBuffer = await file.arrayBuffer();
   await c.env.BUCKET.put(relativePath, arrayBuffer, {
     httpMetadata: {
@@ -169,7 +152,6 @@ app.post('/upload/product-media', async (c) => {
     },
   });
 
-  // 6. Responder con la ruta relativa
   return c.json(
     {
       success: true,
@@ -182,12 +164,9 @@ app.post('/upload/product-media', async (c) => {
   );
 });
 
-// ─── GET /media/* — Servir archivos de R2 públicamente ───────────────────────
-// Sin esto, las imágenes subidas a R2 no se pueden servir al navegador.
-// Se evita el custom domain y el subdominio r2.dev.
-
+// ─── 4. GET /media/* — Servir archivos de R2 públicamente ────────────────────
 app.get('/media/*', async (c) => {
-  const fullPath = c.req.path; // ej: /media/5a2daafd.../products/abc.webp
+  const fullPath = c.req.path;
   const relativePath = fullPath.replace(/^\/media\//, '');
 
   if (!relativePath) {
@@ -211,13 +190,11 @@ app.get('/media/*', async (c) => {
 });
 
 // ─── 404 Catch-all ───────────────────────────────────────────────────────────
-
 app.notFound((c) => {
   return c.json({ success: false, error: 'Recurso no encontrado.' }, 404);
 });
 
 // ─── Error Handler Global ────────────────────────────────────────────────────
-
 app.onError((err, c) => {
   console.error(`[MS3 Error] ${err.message}`, err.stack);
   return c.json({ success: false, error: 'Error interno del servidor.' }, 500);
