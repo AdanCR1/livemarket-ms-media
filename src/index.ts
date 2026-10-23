@@ -185,5 +185,40 @@ app.onError((err, c) => {
   return c.json({ success: false, error: 'Error interno del servidor.' }, 500);
 });
 
+// 1. Endpoint público para logos (SIN middleware de autenticación)
+app.post('/upload/store-logo', async (c) => {
+  const body = await c.req.parseBody();
+  const file = body['file'];
+
+  if (!file || !(file instanceof File)) {
+    return c.json({ success: false, error: 'Se requiere un archivo de imagen válido.' }, 400);
+  }
+
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
+  if (!allowedTypes.includes(file.type)) {
+    return c.json({ success: false, error: 'Formato no soportado. Usa PNG, JPG o WebP.' }, 400);
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    return c.json({ success: false, error: 'La imagen excede el límite de 5MB.' }, 400);
+  }
+
+  const fileKey = `stores/logos/${crypto.randomUUID()}.webp`;
+  const arrayBuffer = await file.arrayBuffer();
+
+  await c.env.MEDIA_BUCKET.put(fileKey, arrayBuffer, {
+    httpMetadata: { contentType: 'image/webp' },
+  });
+
+  return c.json({
+    success: true,
+    data: { url: fileKey },
+  }, 201);
+});
+
+// 2. Middleware JWT aplicado únicamente a las rutas privadas (product-media)
+app.use('/upload/product-media/*', authMiddleware);
+// o si usas rutas con prefijo privado:
+// app.route('/upload/product-media', privateMediaRoutes);
 
 export default app;
